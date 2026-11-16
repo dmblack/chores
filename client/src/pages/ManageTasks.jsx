@@ -1,5 +1,5 @@
 import { Badge, Button, Caption1, Card, CardHeader, Text, makeStyles, tokens } from '@fluentui/react-components';
-import { Add24Regular, ChevronRight24Regular } from '@fluentui/react-icons';
+import { Add24Regular, ChevronRight24Regular } from '../icons.js';
 import { LISTS, advancedSummary } from '@shared/rules.js';
 import { describeRepeat } from '@shared/schedule.js';
 import { useApp } from '../data/AppData.jsx';

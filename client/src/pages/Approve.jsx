@@ -1,6 +1,6 @@
 import { useMemo } from 'react';
 import { Button, Caption1, Card, CardFooter, CardHeader, Spinner, Text, makeStyles, tokens } from '@fluentui/react-components';
-import { ArrowUndo24Regular, Checkmark24Regular, Gift24Regular } from '@fluentui/react-icons';
+import { ArrowUndo24Regular, Checkmark24Regular, Gift24Regular } from '../icons.js';
 import { DECLINE_REASONS, SEND_BACK_REASONS } from '@shared/rules.js';
 import { useApp } from '../data/AppData.jsx';
 import { Empty, Page, Section } from '../components/Page.jsx';

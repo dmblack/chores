@@ -1,6 +1,6 @@
 import { useState } from 'react';
 import { Button, Card, Field, Input, MessageBar, MessageBarBody, Text, makeStyles, tokens } from '@fluentui/react-components';
-import { SignOut24Regular } from '@fluentui/react-icons';
+import { SignOut24Regular } from '../icons.js';
 import { useApp } from '../data/AppData.jsx';
 import { Page, Section } from '../components/Page.jsx';
 import { api } from '../lib/api.js';

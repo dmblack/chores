@@ -1,5 +1,5 @@
 import { Button, Caption1, CounterBadge, ProgressBar, Text, makeStyles, tokens } from '@fluentui/react-components';
-import { CheckmarkCircle24Regular, Star24Filled, TaskListLtr24Regular } from '@fluentui/react-icons';
+import { CheckmarkCircle24Regular, Star24Filled, TaskListLtr24Regular } from '../icons.js';
 import { useApp } from '../data/AppData.jsx';
 import { Page } from '../components/Page.jsx';
 import { UserMenu } from '../components/UserMenu.jsx';

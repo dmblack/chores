@@ -17,7 +17,7 @@ import {
   Settings24Regular,
   SignOut24Regular,
   TaskListSquareLtr24Regular,
-} from '@fluentui/react-icons';
+} from '../icons.js';
 import { useApp } from '../data/AppData.jsx';
 import { go } from '../lib/router.js';
 

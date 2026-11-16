@@ -26,7 +26,7 @@ import {
   makeStyles,
   tokens,
 } from '@fluentui/react-components';
-import { Delete24Regular } from '@fluentui/react-icons';
+import { Delete24Regular } from '../icons.js';
 import { ALLOCATIONS, LISTS, TASK_DEFAULTS, TASK_KINDS, advancedSummary, normaliseTaskDef } from '@shared/rules.js';
 import { REPEAT_OPTIONS } from '@shared/schedule.js';
 import { WEEKDAY_SHORT, localDate } from '@shared/dates.js';

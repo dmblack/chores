@@ -1,5 +1,5 @@
 import { Badge, ToggleButton, makeStyles } from '@fluentui/react-components';
-import { Checkmark20Regular } from '@fluentui/react-icons';
+import { Checkmark20Regular } from '../icons.js';
 
 const useStyles = makeStyles({
   badge: { whiteSpace: 'nowrap', flexShrink: 0 },

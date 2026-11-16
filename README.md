@@ -10,9 +10,14 @@ A household chores app for the iPads: mark a task done (alone or with helpers), 
 
 ```sh
 npm install
-npm run dev        # API on :3000, app on http://localhost:5173 (also on your LAN IP)
-npm test           # server rules: approvals, points, eligibility, retries, rollover, login
+npm run dev          # on this computer: API on :3000, app with hot reload on http://localhost:5173
+npm run dev:device   # on a phone or iPad: the built app on http://<this computer>:3000, rebuilt on save
+npm test             # server rules: approvals, points, eligibility, retries, rollover, login
 ```
+
+**Testing on a phone or iPad? Prefer `npm run dev:device` over the :5173 address.** The Vite dev server sends development builds of React and Fluent, unminified and in dozens of separate files: about 50 MB of JavaScript memory before you tap anything. On a phone over a VPN that's a slow first load, and iOS Safari may throw the tab away and reload it. `dev:device` serves the real build: 6 files, about 5 MB of memory, and a first screen in about 1 s even on a throttled connection. It has no live-reload connection, so after saving a change, wait a couple of seconds for the rebuild, then refresh.
+
+Import icons from `client/src/icons.js`, never straight from `@fluentui/react-icons`. That package's main entry holds all ~28,000 icons, and in dev Vite loads every one of them (18 MB), which made dev loads on a phone take over 30 s.
 
 The first visit asks you to create the first grown-up account. Add everyone else from **People**; each person then sets their own PIN under **Profile**.
 

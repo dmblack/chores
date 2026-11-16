@@ -22,7 +22,7 @@ import {
   makeStyles,
   tokens,
 } from '@fluentui/react-components';
-import { Add24Regular, Edit24Regular } from '@fluentui/react-icons';
+import { Add24Regular, Edit24Regular } from '../icons.js';
 import { useApp } from '../data/AppData.jsx';
 import { Page, Section } from '../components/Page.jsx';
 import { api } from '../lib/api.js';

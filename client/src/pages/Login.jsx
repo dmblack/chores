@@ -12,7 +12,7 @@ import {
   mergeClasses,
   tokens,
 } from '@fluentui/react-components';
-import { Backspace24Regular } from '@fluentui/react-icons';
+import { Backspace24Regular } from '../icons.js';
 import { useApp } from '../data/AppData.jsx';
 import { ApiError, NetworkError } from '../lib/api.js';
 
@@ -38,7 +38,14 @@ const useStyles = makeStyles({
     border: `2px solid ${tokens.colorNeutralStroke1}`,
     boxSizing: 'border-box',
   },
-  dotOn: { backgroundColor: tokens.colorBrandBackground, borderColor: tokens.colorBrandBackground },
+  dotOn: {
+    backgroundColor: tokens.colorBrandBackground,
+    // Griffel needs longhands here: `border` above is expanded to per-side properties.
+    borderTopColor: tokens.colorBrandBackground,
+    borderRightColor: tokens.colorBrandBackground,
+    borderBottomColor: tokens.colorBrandBackground,
+    borderLeftColor: tokens.colorBrandBackground,
+  },
   pad: { display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: tokens.spacingHorizontalM },
   key: { height: '68px', fontSize: tokens.fontSizeBase600 },
 });

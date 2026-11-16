@@ -22,7 +22,7 @@ import {
   makeStyles,
   tokens,
 } from '@fluentui/react-components';
-import { Add24Regular, Delete24Regular, Edit24Regular, Gift24Regular, Star24Filled } from '@fluentui/react-icons';
+import { Add24Regular, Delete24Regular, Edit24Regular, Gift24Regular, Star24Filled } from '../icons.js';
 import { DECLINE_REASONS } from '@shared/rules.js';
 import { useApp } from '../data/AppData.jsx';
 import { Empty, Page, Section } from '../components/Page.jsx';

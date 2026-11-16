@@ -1,5 +1,5 @@
 import { Badge, Button, MessageBar, MessageBarActions, MessageBarBody, Text, Title2, makeStyles, tokens } from '@fluentui/react-components';
-import { ArrowLeft24Regular, CloudArrowUp24Regular, Dismiss24Regular, WifiOff24Regular } from '@fluentui/react-icons';
+import { ArrowLeft24Regular, CloudArrowUp24Regular, Dismiss24Regular, WifiOff24Regular } from '../icons.js';
 import { localDate } from '@shared/dates.js';
 import { useApp } from '../data/AppData.jsx';
 import { go } from '../lib/router.js';

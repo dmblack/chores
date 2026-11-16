@@ -22,7 +22,7 @@ import {
   Circle24Regular,
   Clock24Regular,
   CloudArrowUp24Regular,
-} from '@fluentui/react-icons';
+} from '../icons.js';
 import { ALLOCATIONS, LISTS, SEND_BACK_REASONS, shareFor } from '@shared/rules.js';
 import { useApp } from '../data/AppData.jsx';
 import { Empty, Page, Section } from '../components/Page.jsx';

@@ -1,6 +1,6 @@
 import { useState } from 'react';
 import { Button, Caption1, Card, Field, Input, MessageBar, MessageBarBody, SpinButton, Text, makeStyles, tokens } from '@fluentui/react-components';
-import { Add24Regular, Delete24Regular } from '@fluentui/react-icons';
+import { Add24Regular, Delete24Regular } from '../icons.js';
 import { useApp } from '../data/AppData.jsx';
 import { Page, Section } from '../components/Page.jsx';
 import { dayLabel } from '../lib/util.js';
