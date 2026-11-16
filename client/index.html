@@ -1,0 +1,36 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+    <title>Chores</title>
+    <meta name="description" content="Household chores: mark it done, someone else approves." />
+    <meta name="theme-color" content="#fafafa" />
+    <meta name="mobile-web-app-capable" content="yes" />
+    <meta name="apple-mobile-web-app-capable" content="yes" />
+    <meta name="apple-mobile-web-app-title" content="Chores" />
+    <meta name="apple-mobile-web-app-status-bar-style" content="default" />
+    <link rel="icon" href="/favicon.svg" type="image/svg+xml" />
+    <link rel="apple-touch-icon" href="/apple-touch-icon.png" />
+    <style>
+      html, body { margin: 0; background: #fafafa; -webkit-tap-highlight-color: transparent; }
+      @media (prefers-color-scheme: dark) { html, body { background: #1f1f1f; } }
+      body { font-family: 'Segoe UI', -apple-system, BlinkMacSystemFont, Roboto, 'Helvetica Neue', sans-serif; }
+    </style>
+  </head>
+  <body>
+    <script>
+      // Watch-sized screens get the tiny server-rendered version instead of the full app.
+      // Checked on load and on resize (e.g. switching device size in developer tools).
+      (function () {
+        function toWatch() {
+          if (window.innerWidth > 0 && window.innerWidth < 260) location.replace('/watch');
+        }
+        toWatch();
+        window.addEventListener('resize', toWatch);
+      })();
+    </script>
+    <div id="root"></div>
+    <script type="module" src="/src/main.jsx"></script>
+  </body>
+</html>
