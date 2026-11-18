@@ -1,6 +1,7 @@
 /**
  * Create the first parent through a protected deployment without storing its password or session.
- * This standalone Node.js 18+ command uses only built-in modules and works in AWS CloudShell.
+ * Run this standalone Node.js 18+ command from an allowlisted network after public DNS and
+ * HAProxy are connected. It reaches the application through the public proxy hostname.
  */
 import { readFile } from 'node:fs/promises';
 import { resolve } from 'node:path';
@@ -8,19 +9,11 @@ import { createInterface } from 'node:readline';
 import { fileURLToPath } from 'node:url';
 
 /**
- * Read and validate deployment files without exposing their secret contents in errors.
- * @param {string} cwd - Deployment bundle root containing the .deploy directory.
- * @returns {Promise<object>} Validated endpoint, public URL and authentication headers.
+ * Validate the protected AWS endpoint and the public proxy origin independently of secrets.
+ * @param {object} deployment - Persisted non-secret deployment metadata.
+ * @returns {{endpointUrl: string, publicUrl: string}} Validated HTTPS origins.
  */
-export async function deploymentConfig(cwd) {
-  let deployment;
-  let secrets;
-  try {
-    deployment = JSON.parse(await readFile(resolve(cwd, '.deploy/deployment.json'), 'utf8'));
-    secrets = JSON.parse(await readFile(resolve(cwd, deployment.secretsFile ?? '.deploy/secrets.json'), 'utf8'));
-  } catch {
-    throw new Error('Cannot read deployment configuration. Run the deployment command first from this directory.');
-  }
+export function deploymentLocations(deployment) {
   let endpoint;
   let publicUrl;
   try {
@@ -36,13 +29,31 @@ export async function deploymentConfig(cwd) {
   }
   if (publicUrl.protocol !== 'https:' || publicUrl.username || publicUrl.password || publicUrl.port ||
       publicUrl.pathname !== '/' || publicUrl.search || publicUrl.hash ||
-      !/^[a-z0-9.-]+$/i.test(publicUrl.hostname) || !publicUrl.hostname.includes('.')) {
+      !/^[a-z0-9.-]+$/i.test(publicUrl.hostname) || !publicUrl.hostname.includes('.') || publicUrl.hostname === endpoint.hostname) {
     throw new Error('The deployment public hostname must be a valid HTTPS origin.');
   }
+  return { endpointUrl: endpoint.origin, publicUrl: publicUrl.origin };
+}
+
+/**
+ * Read deployment and secret files without exposing their contents in errors.
+ * @param {string} cwd - Deployment bundle root containing the .deploy directory.
+ * @returns {Promise<object>} Validated origins and authentication headers.
+ */
+export async function deploymentConfig(cwd) {
+  let deployment;
+  let secrets;
+  try {
+    deployment = JSON.parse(await readFile(resolve(cwd, '.deploy/deployment.json'), 'utf8'));
+    secrets = JSON.parse(await readFile(resolve(cwd, deployment.secretsFile ?? '.deploy/secrets.json'), 'utf8'));
+  } catch {
+    throw new Error('Cannot read deployment configuration. Run the deployment command first from this directory.');
+  }
+  const locations = deploymentLocations(deployment);
   if (!/^[a-f0-9]{64}$/i.test(secrets?.originSecret ?? '') || !/^[a-f0-9]{64}$/i.test(secrets?.bootstrapToken ?? '')) {
     throw new Error('Deployment authentication secrets are missing or invalid. Run the deployment command first.');
   }
-  return { endpointUrl: endpoint.origin, publicUrl: publicUrl.origin,
+  return { ...locations,
     originSecret: secrets.originSecret, bootstrapToken: secrets.bootstrapToken };
 }
 
@@ -170,7 +181,7 @@ function validateProfile({ username, nickname, birthDate, password }) {
 }
 
 /**
- * Check setup status, collect the first parent's details and submit them once.
+ * Check public setup status, collect the first parent's details and submit them through HAProxy.
  * @param {object} [options] - Dependency injection for local tests; production uses the global fetch.
  * @param {string} [options.cwd] - Deployment bundle root.
  * @param {Function} [options.fetchImpl] - HTTPS fetch implementation.
@@ -185,14 +196,14 @@ export async function bootstrapDeployment({ cwd = process.cwd(), fetchImpl = glo
     /** Fetch without redirects so deployment secrets are never forwarded to another endpoint. */
     const request = async (path, options = {}) => {
       try {
-        return await fetchImpl(`${config.endpointUrl}${path}`, { ...options, redirect: 'error',
+        return await fetchImpl(`${config.publicUrl}${path}`, { ...options, redirect: 'error',
           signal: AbortSignal.timeout(30_000), headers: { 'x-app-origin-secret': config.originSecret, ...options.headers } });
       } catch {
-        throw new Error('Cannot reach the deployment. Check its endpoint and connectivity, then run this command again.');
+        throw new Error('Cannot reach the public deployment. Use an allowlisted network and check DNS and HAProxy, then try again.');
       }
     };
     const status = await request('/api/auth/status', { method: 'GET' });
-    if (!status.ok) throw new Error(`Deployment status check failed (HTTP ${status.status}). Check deployment access and try again.`);
+    if (!status.ok) throw new Error(`Deployment status check failed (HTTP ${status.status}). Check your network allowlist and HAProxy access, then try again.`);
     let current;
     try {
       current = await status.json();

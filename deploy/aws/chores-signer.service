@@ -1,0 +1,56 @@
+# Install the matching static binary at /usr/local/bin/chores-signer and keep
+# /etc/chores-signer.env root-owned with mode 0600 before enabling this unit.
+# That file sets AWS_WEB_FUNCTION_URL to the HTTPS EndpointUrl stack output and
+# AWS_REGION to its region. The helper obtains temporary credentials from IMDSv2;
+# never put access keys or session tokens in the environment file or arguments.
+[Unit]
+Description=Loopback SigV4 proxy for the Chores Lambda Web Function
+Wants=network-online.target
+After=network-online.target
+StartLimitIntervalSec=60s
+StartLimitBurst=5
+
+# Bind 127.0.0.1:8787 without root privileges. Outbound networking remains enabled
+# so the helper can reach EC2 metadata and the fixed HTTPS AWS endpoint.
+[Service]
+Type=simple
+DynamicUser=yes
+# An older systemd that lacks DynamicUser must fail for a missing account,
+# rather than silently starting the credential-bearing helper as root.
+User=chores-signer
+Group=chores-signer
+WorkingDirectory=/
+EnvironmentFile=/etc/chores-signer.env
+ExecStart=/usr/local/bin/chores-signer
+Restart=on-failure
+RestartSec=3s
+TimeoutStopSec=15s
+UMask=0077
+
+# Keep the signer separate from the proxy host's files, devices, and kernel state.
+NoNewPrivileges=yes
+CapabilityBoundingSet=
+AmbientCapabilities=
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+PrivateDevices=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectKernelLogs=yes
+ProtectControlGroups=yes
+ProtectClock=yes
+RestrictSUIDSGID=yes
+RestrictRealtime=yes
+RestrictNamespaces=yes
+LockPersonality=yes
+MemoryDenyWriteExecute=yes
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+SystemCallArchitectures=native
+
+# Record actual resource usage before deciding on CPU or memory limits.
+CPUAccounting=yes
+MemoryAccounting=yes
+
+[Install]
+WantedBy=multi-user.target

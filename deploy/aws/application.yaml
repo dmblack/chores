@@ -37,6 +37,18 @@ Parameters:
     MinLength: 1
     MaxLength: 128
     Description: IANA timezone for household calendar days, independent of the AWS region.
+  ProxyInstanceArn:
+    Type: String
+    AllowedPattern: 'arn:aws[a-zA-Z-]*:ec2:[a-z0-9-]+:[0-9]{12}:instance/i-([0-9a-f]{8}|[0-9a-f]{17})'
+    MinLength: 50
+    MaxLength: 256
+    Description: ARN of the existing HAProxy EC2 instance whose role credentials may invoke the endpoint.
+  ProxyRoleArn:
+    Type: String
+    AllowedPattern: 'arn:aws[a-zA-Z-]*:iam::[0-9]{12}:role/([\x21-\x7E]+/)?[A-Za-z0-9_+=,.@-]{1,64}'
+    MinLength: 20
+    MaxLength: 2048
+    Description: Existing IAM role attached to that instance, in this AWS account; its instance profile is not changed.
   OriginSecret:
     Type: String
     NoEcho: true
@@ -192,14 +204,14 @@ Resources:
             ApplicationLogLevel: INFO
             SystemLogLevel: WARN
 
-  # HAProxy supplies the application origin secret; user sessions remain app-managed.
+  # AWS verifies the proxy's signed requests before they can reach application code.
   PublicEndpoint:
     Type: AWS::Lambda::WebFunctionEndpoint
     Properties:
       FunctionName: !GetAtt WebFunction.FunctionArn
       EndpointName: public
       EndpointType: HomeRegion
-      AuthType: ApplicationManaged
+      AuthType: IamAuth
       RevisionWeights:
         - RevisionId: !If [UseRollbackRevision, !Ref RollbackRevisionId, !GetAtt ApplicationRevision.RevisionId]
           Weight: 100
@@ -208,7 +220,43 @@ Resources:
       ThrottleConfig:
         RateLimit: !Ref RequestRateLimit
 
-# Use the AWS endpoint hostname for upstream Host, SNI, and certificate validation.
+  # Both identity and source-instance checks are mandatory. Separate denials
+  # enforce OR semantics, including when a request lacks either condition key.
+  # Only endpoint invocation is restricted; deployment management still works.
+  ProxyInvocationPolicy:
+    Type: AWS::Lambda::ResourcePolicy
+    Properties:
+      ResourceArn: !GetAtt WebFunction.FunctionArn
+      PolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Sid: DenyInvocationFromOtherRoles
+            Effect: Deny
+            Principal: '*'
+            Action: lambda:InvokeWebFunctionEndpoint
+            Resource: !GetAtt PublicEndpoint.EndpointArn
+            Condition:
+              ArnNotEquals:
+                aws:PrincipalArn: !Ref ProxyRoleArn
+          - Sid: DenyInvocationFromOtherInstances
+            Effect: Deny
+            Principal: '*'
+            Action: lambda:InvokeWebFunctionEndpoint
+            Resource: !GetAtt PublicEndpoint.EndpointArn
+            Condition:
+              ArnNotEquals:
+                ec2:SourceInstanceARN: !Ref ProxyInstanceArn
+          - Sid: AllowTheExistingProxyInstance
+            Effect: Allow
+            Principal:
+              AWS: !Ref ProxyRoleArn
+            Action: lambda:InvokeWebFunctionEndpoint
+            Resource: !GetAtt PublicEndpoint.EndpointArn
+            Condition:
+              ArnEquals:
+                ec2:SourceInstanceARN: !Ref ProxyInstanceArn
+
+# Configure the local signer with EndpointUrl; it fixes and verifies upstream TLS.
 Outputs:
   PublicUrl:
     Value: !Sub 'https://${PublicHostname}'
@@ -216,6 +264,10 @@ Outputs:
     Value: !GetAtt PublicEndpoint.DomainName
   EndpointUrl:
     Value: !Sub 'https://${PublicEndpoint.DomainName}'
+  WebFunctionArn:
+    Value: !GetAtt WebFunction.FunctionArn
+  EndpointArn:
+    Value: !GetAtt PublicEndpoint.EndpointArn
   CurrentRevisionId:
     Value: !GetAtt ApplicationRevision.RevisionId
     Description: Record this value before an update for a possible rollback.

@@ -69,6 +69,8 @@ function archive(directory, archive) {
 // Only named generated directories are replaced; household data and secrets are never copied.
 try {
   run('zip', ['-v'], { stdio: 'pipe' });
+  // Test and cross-compile the loopback helper separately from the Lambda app.
+  run('npm', ['run', 'build:signer']);
   run('npm', ['run', 'build']);
   mkdirSync(output, { recursive: true, mode: 0o700 });
   for (const directory of [stage, cloud]) { rmSync(directory, { recursive: true, force: true }); mkdirSync(directory, { recursive: true }); }
@@ -98,13 +100,16 @@ try {
   mkdirSync(join(cloud, 'scripts'), { recursive: true });
   mkdirSync(join(cloud, 'deploy', 'aws'), { recursive: true });
   for (const name of ['chores-aws.zip', 'manifest.json']) cpSync(join(output, name), join(cloud, '.deploy', name));
-  for (const name of ['deploy-aws.js', 'bootstrap-deployment.js']) {
+  for (const name of ['deploy-aws.js', 'bootstrap-deployment.js', 'verify-deployment.js']) {
     if (!existsSync(join(root, 'scripts', name))) throw new Error(`Missing deployment script: ${name}`);
     cpSync(join(root, 'scripts', name), join(cloud, 'scripts', name));
   }
-  for (const name of ['artifacts.yaml', 'application.yaml', 'haproxy.cfg.example', 'README.md']) {
+  for (const name of ['artifacts.yaml', 'application.yaml', 'haproxy.cfg.example', 'chores-signer.service', 'README.md']) {
     cpSync(join(root, 'deploy', 'aws', name), join(cloud, 'deploy', 'aws', name));
   }
+  // Both Linux architectures are supplied; installation selects the host's
+  // actual architecture. No compiler, Node.js or AWS CLI is needed on EC2.
+  cpSync(join(output, 'signer'), join(cloud, '.deploy', 'signer'), { recursive: true });
   writeFileSync(join(cloud, 'package.json'), '{"private":true,"type":"module"}\n');
   archive(cloud, join(output, 'chores-cloudshell.zip'));
   console.log(`Built .deploy/chores-aws.zip (${uncompressedBytes} uncompressed bytes, SHA-256 ${sha256}).`);

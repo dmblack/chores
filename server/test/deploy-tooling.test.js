@@ -14,6 +14,11 @@ import { PassThrough, Readable } from 'node:stream';
 import { deployAws, deploymentOptions } from '../../scripts/deploy-aws.js';
 import { bootstrapDeployment, createPrompter } from '../../scripts/bootstrap-deployment.js';
 
+/** Explicit fixture identities let tests cover a proxy in a different AWS region. */
+const proxyInstanceArn = 'arn:aws:ec2:ap-southeast-2:123456789012:instance/i-0123456789abcdef0';
+const proxyRoleArn = 'arn:aws:iam::123456789012:role/proxies/household-proxy';
+const deployArgs = ['--hostname', 'tasks.fortheherd.net', '--proxy-instance-arn', proxyInstanceArn, '--proxy-role-arn', proxyRoleArn];
+
 /**
  * Provide a disposable code bundle and an in-memory CloudFormation/S3 simulator.
  * @param {object} t - Test cleanup context.
@@ -38,6 +43,13 @@ function fixture(t) {
     const value = (flag) => args[args.indexOf(flag) + 1];
     const operation = `${args[0]} ${args[1]}`;
     if (operation === 'sts get-caller-identity') return JSON.stringify({ Account: '123456789012' });
+    if (operation === 'ec2 describe-instances') {
+      assert.equal(value('--region'), 'ap-southeast-2');
+      return JSON.stringify({ Reservations: [{ Instances: [{ InstanceId: 'i-0123456789abcdef0', State: { Name: 'running' },
+        IamInstanceProfile: { Arn: 'arn:aws:iam::123456789012:instance-profile/proxies/household-proxy' } }] }] });
+    }
+    if (operation === 'iam get-instance-profile') return JSON.stringify({ InstanceProfile: {
+      Arn: 'arn:aws:iam::123456789012:instance-profile/proxies/household-proxy', Roles: [{ Arn: proxyRoleArn }] } });
     if (operation === 'cloudformation validate-template' || args[1] === 'wait') return '';
     const name = value('--stack-name');
     if (operation === 'cloudformation describe-stacks') {
@@ -80,6 +92,8 @@ test('deployment arguments require an explicit public host and valid timezone', 
   assert.throws(() => deploymentOptions(['--hostname', 'tasks.fortheherd.net', '--timezone', 'Invalid/Clock']), /timezone/);
   assert.throws(() => deploymentOptions(['--hostname', 'tasks.fortheherd.net', '--stack', 'a']), /2–54/);
   assert.throws(() => deploymentOptions(['--hostname', 'tasks.fortheherd.net', '--stack', 'chores-']), /2–54/);
+  assert.throws(() => deploymentOptions(['--hostname', 'tasks.fortheherd.net', '--proxy-instance-arn', 'i-0123456789abcdef0']), /instance/);
+  assert.throws(() => deploymentOptions(['--hostname', 'tasks.fortheherd.net', '--proxy-role-arn', 'arn:aws:iam::123456789012:user/parent']), /role/);
   assert.equal(deploymentOptions(['--hostname', 'tasks.fortheherd.net']).timezone, 'Australia/Melbourne');
 });
 
@@ -87,17 +101,28 @@ test('deployment arguments require an explicit public host and valid timezone', 
 test('CloudShell deployment uses private parameter files, pinned code and stable secrets', async (t) => {
   const h = fixture(t);
   const logs = [];
-  const args = ['--hostname', 'tasks.fortheherd.net'];
-  const services = { ...h, output: (message) => logs.push(message), fetch: async () => new Response('{"needsSetup":true}') };
+  const args = deployArgs;
+  const services = { ...h, output: (message) => logs.push(message), fetch: async (url, options) => {
+    assert.equal(new URL(url).hostname, 'example.shard.lambda-web.us-west-2.on.aws');
+    assert.equal(options.redirect, 'error');
+    assert.ok(options.headers['x-app-origin-secret']);
+    assert.equal(options.headers.Authorization, undefined);
+    return new Response('', { status: 403 });
+  } };
   const first = await deployAws(args, services);
   const secrets = JSON.parse(readFileSync(join(h.cwd, '.deploy', 'secrets.json'), 'utf8'));
   assert.equal(first.servingRevisionId, 'revision-1');
   assert.equal(first.timezone, 'Australia/Melbourne');
+  assert.equal(first.accessMode, 'ec2-iam');
+  assert.equal(first.proxyInstanceArn, proxyInstanceArn);
+  assert.equal(first.proxyRoleArn, proxyRoleArn);
   assert.equal(h.stacks.get('chores-tasks').Parameters.find((entry) => entry.ParameterKey === 'CodeVersion').ParameterValue, 'version-one');
   assert.equal(statSync(join(h.cwd, '.deploy', 'haproxy.generated.cfg')).mode & 0o777, 0o600);
   assert.equal(statSync(join(h.cwd, '.deploy', 'secrets.json')).mode & 0o777, 0o600);
   assert.ok(readFileSync(join(h.cwd, '.deploy', 'haproxy.generated.cfg'), 'utf8').includes(secrets.originSecret));
-  const second = await deployAws(args, services);
+  assert.ok(readFileSync(join(h.cwd, '.deploy', 'chores-signer.env'), 'utf8').includes(`AWS_REGION=us-west-2`));
+  assert.equal(statSync(join(h.cwd, '.deploy', 'chores-signer.env')).mode & 0o777, 0o600);
+  const second = await deployAws(['--hostname', 'tasks.fortheherd.net'], services);
   assert.equal(second.previousRevisionId, 'revision-1');
   assert.equal(h.commands.filter((command) => command[0] === 's3api' && command[1] === 'put-object').length, 1);
   assert.deepEqual(JSON.parse(readFileSync(join(h.cwd, '.deploy', 'secrets.json'), 'utf8')), secrets);
@@ -115,14 +140,14 @@ test('CloudShell deployment uses private parameter files, pinned code and stable
 test('deployment rejects a code archive whose integrity manifest does not match', async (t) => {
   const h = fixture(t);
   writeFileSync(join(h.cwd, '.deploy', 'chores-aws.zip'), 'Modified archive');
-  await assert.rejects(deployAws(['--hostname', 'tasks.fortheherd.net'], { ...h, output: () => {} }), /does not match manifest/);
+  await assert.rejects(deployAws(deployArgs, { ...h, output: () => {} }), /does not match manifest/);
   assert.equal(h.stacks.size, 0);
 });
 
 /** Buffered setup input survives status checks and no credential or cookie is printed. */
 test('bootstrap consumes piped answers and never persists or prints the session', async (t) => {
   const h = fixture(t);
-  await deployAws(['--hostname', 'tasks.fortheherd.net'], { ...h, output: () => {}, fetch: async () => new Response('{"needsSetup":true}') });
+  await deployAws(deployArgs, { ...h, output: () => {}, fetch: async () => new Response('', { status: 403 }) });
   const input = Readable.from(['parent\nParent\n1980-01-01\nsecret-password\nsecret-password\n']);
   const output = new PassThrough();
   let printed = '';
@@ -130,6 +155,7 @@ test('bootstrap consumes piped answers and never persists or prints the session'
   let submitted;
   const result = await bootstrapDeployment({ cwd: h.cwd, output, prompter: createPrompter({ input, output }), fetchImpl: async (url, options) => {
     assert.equal(options.redirect, 'error');
+    assert.equal(new URL(url).origin, 'https://tasks.fortheherd.net');
     if (url.endsWith('/status')) return new Response('{"needsSetup":true}');
     submitted = JSON.parse(options.body);
     return new Response('{"ok":true}', { headers: { 'Set-Cookie': 'sid=private-session; Secure; HttpOnly' } });
@@ -140,4 +166,37 @@ test('bootstrap consumes piped answers and never persists or prints the session'
   assert.equal(printed.includes('secret-password'), false);
   assert.equal(printed.includes('private-session'), false);
   assert.equal(existsSync(resolve(h.cwd, '.deploy', 'session.json')), false);
+});
+
+/** A missing, cross-account or incorrectly attached proxy identity never provisions resources. */
+test('deployment rejects missing or mismatched EC2 identities before provisioning', async (t) => {
+  const h = fixture(t);
+  const services = { ...h, output: () => {} };
+  await assert.rejects(deployAws(['--hostname', 'tasks.fortheherd.net'], services), /first deployment/);
+  await assert.rejects(deployAws([...deployArgs.slice(0, -1), proxyRoleArn.replace('123456789012', '999999999999')], services), /same AWS account/);
+  await assert.rejects(deployAws([...deployArgs.slice(0, -1), 'arn:aws:iam::123456789012:role/another-role'], services), /not the IAM role attached/);
+  assert.equal(h.stacks.size, 0);
+  assert.equal(h.commands.some((command) => ['associate-iam-instance-profile', 'replace-iam-instance-profile-association'].includes(command[1])), false);
+});
+
+/** An existing instance without a profile needs an explicit role attachment first. */
+test('deployment does not modify an instance that has no IAM role', async (t) => {
+  const h = fixture(t);
+  /** Override the EC2 response without adding any AWS mutation capability. */
+  const execute = (command, args) => args[0] === 'ec2' ? JSON.stringify({ Reservations: [{ Instances: [
+    { InstanceId: 'i-0123456789abcdef0', State: { Name: 'running' } },
+  ] }] }) : h.execute(command, args);
+  await assert.rejects(deployAws(deployArgs, { ...h, execute, output: () => {} }), /has no IAM instance profile/);
+  assert.equal(h.stacks.size, 0);
+});
+
+/** A disabled metadata endpoint cannot supply the credential-only signing helper. */
+test('deployment rejects disabled EC2 metadata before creating billable resources', async (t) => {
+  const h = fixture(t);
+  /** Return the exact selected instance with metadata explicitly disabled. */
+  const execute = (command, args) => args[0] === 'ec2' ? JSON.stringify({ Reservations: [{ Instances: [
+    { InstanceId: 'i-0123456789abcdef0', State: { Name: 'running' }, MetadataOptions: { HttpEndpoint: 'disabled' } },
+  ] }] }) : h.execute(command, args);
+  await assert.rejects(deployAws(deployArgs, { ...h, execute, output: () => {} }), /metadata endpoint with IMDSv2/);
+  assert.equal(h.stacks.size, 0);
 });

@@ -22,7 +22,9 @@ const app = buildApp({
   ...runtime,
   https,
   logger: { level: env.LOG_LEVEL ?? 'info',
-    redact: ['req.headers.authorization', 'req.headers.cookie', 'req.headers["x-app-origin-secret"]', 'req.headers["x-bootstrap-token"]'] },
+    // Signed proxy requests can carry temporary AWS session tokens; redact them with app credentials.
+    redact: ['req.headers.authorization', 'req.headers.cookie', 'req.headers["x-amz-security-token"]',
+      'req.headers["x-app-origin-secret"]', 'req.headers["x-bootstrap-token"]'] },
 });
 
 await app.listen({ port, host });

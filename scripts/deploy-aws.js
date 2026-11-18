@@ -5,7 +5,7 @@
  * @module scripts/deploy-aws
  */
 import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, renameSync, rmSync, writeFileSync } from 'node:fs';
-import { dirname, isAbsolute, join, resolve } from 'node:path';
+import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { execFileSync } from 'node:child_process';
 import { createHash, randomBytes } from 'node:crypto';
@@ -19,7 +19,8 @@ import { setTimeout as delay } from 'node:timers/promises';
 export function deploymentOptions(args) {
   const options = { region: 'us-west-2', stack: 'chores-tasks', artifact: '.deploy/chores-aws.zip', secretsFile: '.deploy/secrets.json', timezone: 'Australia/Melbourne' };
   const names = { '--hostname': 'hostname', '--region': 'region', '--stack': 'stack', '--artifact': 'artifact',
-    '--secrets-file': 'secretsFile', '--ca-file': 'caFile', '--rollback-revision': 'rollbackRevision', '--timezone': 'timezone' };
+    '--secrets-file': 'secretsFile', '--rollback-revision': 'rollbackRevision', '--timezone': 'timezone',
+    '--proxy-instance-arn': 'proxyInstanceArn', '--proxy-role-arn': 'proxyRoleArn' };
   for (let i = 0; i < args.length; i += 2) {
     if (!names[args[i]] || !args[i + 1] || args[i + 1].startsWith('--')) throw new Error(`Unknown or incomplete option: ${args[i]}`);
     options[names[args[i]]] = args[i + 1];
@@ -32,7 +33,12 @@ export function deploymentOptions(args) {
   if (!/^[A-Za-z][A-Za-z0-9-]{0,52}[A-Za-z0-9]$/.test(options.stack)) {
     throw new Error('--stack must contain 2–54 letters, numbers or dashes, begin with a letter and end with a letter or number.');
   }
-  if (options.caFile && (!isAbsolute(options.caFile) || /\s/.test(options.caFile))) throw new Error('--ca-file must be an absolute HAProxy-host path without whitespace.');
+  if (options.proxyInstanceArn && !/^arn:aws:ec2:[a-z]{2}(?:-[a-z]+)+-\d+:\d{12}:instance\/i-(?:[a-f0-9]{8}|[a-f0-9]{17})$/.test(options.proxyInstanceArn)) {
+    throw new Error('--proxy-instance-arn must identify the HAProxy EC2 instance, including its account and region.');
+  }
+  if (options.proxyRoleArn && !/^arn:aws:iam::\d{12}:role\/[A-Za-z0-9_+=,.@/-]+$/.test(options.proxyRoleArn)) {
+    throw new Error('--proxy-role-arn must identify the IAM role already attached to the HAProxy EC2 instance.');
+  }
   if (options.rollbackRevision && !/^[A-Za-z0-9_-]+$/.test(options.rollbackRevision)) throw new Error('Invalid rollback revision ID.');
   try { new Intl.DateTimeFormat('en', { timeZone: options.timezone }).format(); }
   catch { throw new Error('Invalid household timezone. Use an IANA name such as Australia/Melbourne.'); }
@@ -58,14 +64,13 @@ export function deploymentSecrets(file) {
 }
 
 /**
- * Render the proxy excerpt while leaving an unknown host CA bundle explicit.
+ * Render the HAProxy excerpt that delegates AWS signing to the loopback helper.
  * @param {string} template - Checked HAProxy configuration excerpt.
- * @param {object} values - Public host, AWS endpoint, secret and optional CA file.
+ * @param {object} values - Public host and private origin secret.
  * @returns {string} Configuration containing a private origin header.
  */
-export function renderProxy(template, { hostname, endpointHostname, originSecret, caFile }) {
-  return template.replaceAll('PUBLIC_HOSTNAME', hostname).replaceAll('AWS_ENDPOINT_HOSTNAME', endpointHostname)
-    .replaceAll('ORIGIN_SECRET', originSecret).replaceAll('CA_BUNDLE', caFile ?? 'CA_BUNDLE');
+export function renderProxy(template, { hostname, originSecret }) {
+  return template.replaceAll('PUBLIC_HOSTNAME', hostname).replaceAll('ORIGIN_SECRET', originSecret);
 }
 
 /**
@@ -92,7 +97,7 @@ function writePrivate(file, content) {
 }
 
 /**
- * Apply stack templates, upload immutable code, and verify the AWS HTTP endpoint.
+ * Apply stack templates, upload immutable code, and verify AWS rejects unsigned invocation.
  * Requires Node.js 18+, AWS CLI, and the caller's existing AWS credentials.
  * @param {string[]} [args] - CLI options.
  * @param {object} [services] - Injectable CLI runner and fetch for regression tests.
@@ -113,13 +118,43 @@ export async function deployAws(args = process.argv.slice(2), services = {}) {
   /**
    * Execute literal AWS CLI arguments, keeping all returned JSON out of logs.
    * @param {string[]} command - AWS service, operation and arguments.
+   * @param {string} [region] - Explicit region for cross-region EC2 inspection.
    * @returns {object} Parsed JSON response, or an empty object for a waiter.
    */
-  function aws(command) {
-    const raw = execute('aws', [...command, '--region', options.region, '--output', 'json', '--no-cli-pager'],
+  function aws(command, region = options.region) {
+    const raw = execute('aws', [...command, '--region', region, '--output', 'json', '--no-cli-pager'],
       { cwd, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'], maxBuffer: 4 * 1024 * 1024,
         env: { ...process.env, AWS_PAGER: '', AWS_CLI_AUTO_PROMPT: 'off' } });
     return raw.trim() ? JSON.parse(raw) : {};
+  }
+
+  /**
+   * Verify the chosen instance actually receives the chosen role before changing AWS resources.
+   * Existing instance profiles are inspected and never attached, replaced or edited here.
+   * @param {string} instanceArn - Exact HAProxy instance ARN, possibly in another region.
+   * @param {string} roleArn - Existing IAM instance role ARN in this AWS account.
+   * @param {string} account - Account authenticated in CloudShell.
+   * @returns {void} Throws before provisioning when the role or instance does not match.
+   */
+  function verifyProxy(instanceArn, roleArn, account) {
+    const instanceMatch = /^arn:aws:ec2:([a-z0-9-]+):(\d{12}):instance\/(i-(?:[a-f0-9]{8}|[a-f0-9]{17}))$/.exec(instanceArn ?? '');
+    const roleMatch = /^arn:aws:iam::(\d{12}):role\/[A-Za-z0-9_+=,.@/-]+$/.exec(roleArn ?? '');
+    if (!instanceMatch || !roleMatch) throw new Error('For the first deployment, supply --proxy-instance-arn and --proxy-role-arn. Updates can reuse the deployed values.');
+    if (instanceMatch[2] !== account || roleMatch[1] !== account) throw new Error('The HAProxy instance, its role and this deployment must belong to the same AWS account.');
+    const result = aws(['ec2', 'describe-instances', '--instance-ids', instanceMatch[3]], instanceMatch[1]);
+    const instances = (result.Reservations ?? []).flatMap((reservation) => reservation.Instances ?? []);
+    const instance = instances.find((entry) => entry.InstanceId === instanceMatch[3]);
+    if (!instance || ['shutting-down', 'terminated'].includes(instance.State?.Name)) throw new Error('The selected HAProxy EC2 instance does not exist or is being terminated.');
+    if (instance.MetadataOptions?.HttpEndpoint === 'disabled') throw new Error('Enable the EC2 instance metadata endpoint with IMDSv2 so the signing helper can retrieve its role credentials.');
+    const profileArn = instance.IamInstanceProfile?.Arn;
+    const profileName = profileArn?.split('/').at(-1);
+    if (!profileName || !/^arn:aws:iam::\d{12}:instance-profile\//.test(profileArn)) {
+      throw new Error('The HAProxy instance has no IAM instance profile. Attach the intended EC2 role in the EC2 console, then retry.');
+    }
+    const profile = aws(['iam', 'get-instance-profile', '--instance-profile-name', profileName]).InstanceProfile;
+    if (profile?.Arn !== profileArn || profile.Roles?.length !== 1 || profile.Roles[0].Arn !== roleArn) {
+      throw new Error('The selected role is not the IAM role attached to the HAProxy instance. Its existing profile was not changed.');
+    }
   }
 
   /**
@@ -167,12 +202,20 @@ export async function deployAws(args = process.argv.slice(2), services = {}) {
     const identity = aws(['sts', 'get-caller-identity']);
     output(`Using AWS account ${identity.Account}, region ${options.region}.`);
     const before = describe(options.stack);
+    // Updates and rollbacks retain the approved proxy identity unless explicitly changed.
+    const previousParameters = Object.fromEntries((before?.Parameters ?? []).map((entry) => [entry.ParameterKey, entry.ParameterValue]));
+    const proxyInstanceArn = options.proxyInstanceArn ?? previousParameters.ProxyInstanceArn;
+    const proxyRoleArn = options.proxyRoleArn ?? previousParameters.ProxyRoleArn;
+    verifyProxy(proxyInstanceArn, proxyRoleArn, identity.Account);
     let stack;
     let sha256;
     if (options.rollbackRevision) {
       if (!before) throw new Error('There is no deployed stack to roll back.');
       const hostname = before.Parameters?.find((entry) => entry.ParameterKey === 'PublicHostname')?.ParameterValue;
       if (hostname !== options.hostname) throw new Error('The hostname does not match the deployed stack.');
+      if (proxyInstanceArn !== previousParameters.ProxyInstanceArn || proxyRoleArn !== previousParameters.ProxyRoleArn) {
+        throw new Error('A code rollback cannot change the allowed proxy identity. Run a normal deployment to change its instance or role.');
+      }
       const parameters = before.Parameters.map((entry) => entry.ParameterKey === 'RollbackRevisionId'
         ? { ParameterKey: entry.ParameterKey, ParameterValue: options.rollbackRevision }
         : { ParameterKey: entry.ParameterKey, UsePreviousValue: true });
@@ -205,7 +248,8 @@ export async function deployAws(args = process.argv.slice(2), services = {}) {
       if (!version || version === 'null') throw new Error('The code bucket did not return a valid object VersionId.');
       const parameters = { FunctionName: options.stack, CodeBucket: bucket, CodeKey: key, CodeVersion: version,
         PublicHostname: options.hostname, HouseholdTimezone: options.timezone,
-        OriginSecret: secrets.originSecret, BootstrapToken: secrets.bootstrapToken, RollbackRevisionId: '' };
+        OriginSecret: secrets.originSecret, BootstrapToken: secrets.bootstrapToken, RollbackRevisionId: '',
+        ProxyInstanceArn: proxyInstanceArn, ProxyRoleArn: proxyRoleArn };
       stack = apply(options.stack, 'deploy/aws/application.yaml', Object.entries(parameters)
         .map(([ParameterKey, ParameterValue]) => ({ ParameterKey, ParameterValue })));
     }
@@ -216,6 +260,7 @@ export async function deployAws(args = process.argv.slice(2), services = {}) {
       throw new Error('CloudFormation did not return a valid regional Lambda Web Function endpoint.');
     }
     const metadata = { account: identity.Account, region: options.region, stackName: options.stack, publicHostname: options.hostname,
+      publicUrl: `https://${options.hostname}`, accessMode: 'ec2-iam', proxyInstanceArn, proxyRoleArn,
       endpointUrl: endpoint.origin, currentRevisionId: values.CurrentRevisionId, servingRevisionId: values.ServingRevisionId,
       previousRevisionId: before ? outputs(before).ServingRevisionId : null, dynamoDBTable: values.DynamoDBTable,
       applicationLogGroup: values.ApplicationLogGroup, regionalLogGroup: values.RegionalLogGroup,
@@ -224,22 +269,26 @@ export async function deployAws(args = process.argv.slice(2), services = {}) {
       ...(sha256 ? { sha256 } : {}) };
     writePrivate(join(work, 'deployment.json'), `${JSON.stringify(metadata, null, 2)}\n`);
     const proxy = renderProxy(readFileSync(join(cwd, 'deploy', 'aws', 'haproxy.cfg.example'), 'utf8'),
-      { hostname: options.hostname, endpointHostname: endpoint.hostname, originSecret: secrets.originSecret, caFile: options.caFile });
+      { hostname: options.hostname, originSecret: secrets.originSecret });
     writePrivate(join(work, 'haproxy.generated.cfg'), proxy);
-    // Endpoints can be Active even when application startup fails; verify real HTTP.
-    let healthy = false;
+    writePrivate(join(work, 'chores-signer.env'), `# Fixed AWS origin and signing region; this file contains no AWS credentials.\nAWS_WEB_FUNCTION_URL=${endpoint.origin}\nAWS_REGION=${options.region}\n`);
+    // A valid app-level secret would pass the old public endpoint. AWS must now
+    // reject it because no EC2 signature is present, before app code can run.
+    let protectedEndpoint = false;
     for (let attempt = 0; attempt < 10; attempt++) {
       try {
         const response = await fetchImpl(`${endpoint.origin}/api/auth/status`, {
           headers: { 'x-app-origin-secret': secrets.originSecret }, redirect: 'error', signal: AbortSignal.timeout(10_000) });
-        if (response.ok && typeof (await response.json()).needsSetup === 'boolean') { healthy = true; break; }
-      } catch { /* Cold-start and propagation failures receive bounded retries. */ }
+        await response.body?.cancel();
+        if (response.status === 403) { protectedEndpoint = true; break; }
+      } catch { /* Endpoint DNS and authorization propagation receive bounded retries. */ }
       if (attempt < 9) await delay(1_000);
     }
-    if (!healthy) throw new Error(`The stack exists but the app did not become healthy. Inspect ${values.ApplicationLogGroup} in CloudWatch.`);
-    output(`Application is healthy. Public address: https://${options.hostname}`);
-    output('Next: node scripts/bootstrap-deployment.js, then merge .deploy/haproxy.generated.cfg into your existing proxy configuration.');
-    output('The generated proxy excerpt contains a secret. Keep it private and replace CA_BUNDLE with the proxy host’s CA file.');
+    if (!protectedEndpoint) throw new Error('The stack exists but its AWS endpoint did not reject an unsigned request. Inspect its IAM endpoint configuration before connecting HAProxy.');
+    output('AWS rejected unsigned invocation. Application readiness will be checked through HAProxy after its route is configured.');
+    output('Next: install the signing helper and merge .deploy/haproxy.generated.cfg while preserving your existing source-IP restrictions.');
+    output(`Then run verification and first-parent setup from an allowed network at https://${options.hostname}; see deploy/aws/README.md.`);
+    output('The generated HAProxy excerpt contains a secret. Transfer it privately and keep it readable only by the proxy administrator.');
     return metadata;
   } finally { rmSync(temporary, { recursive: true, force: true }); }
 }
