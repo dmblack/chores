@@ -122,6 +122,7 @@ function approvePage(snap, query) {
   return page(`${homeLink}${flash(query)}${list}`);
 }
 
+/** @param {object} app - Fastify scope. @param {object} options - Store and authentication. @returns {void} */
 export function registerWatch(app, { store, auth }) {
   // Watch forms post as application/x-www-form-urlencoded.
   app.addContentTypeParser('application/x-www-form-urlencoded', { parseAs: 'string', bodyLimit: 4096 }, (req, body, done) => {
@@ -134,9 +135,10 @@ export function registerWatch(app, { store, auth }) {
 
   /** A watch page for the signed-in person, or the PIN page. */
   const view = (render) => async (req, reply) => {
-    const user = auth.sessionUser(req, reply);
+    const user = await auth.sessionUser(req, reply);
     if (!user) return html(reply, signInPage(req.query));
-    return html(reply, render(buildSnapshot(store.state, store.loadUsers(), user.id, store.clock()), req.query));
+    const snapshot = await store.read((tx) => buildSnapshot(tx.state, tx.publicUsers(), user.id, store.clock()));
+    return html(reply, render(snapshot, req.query));
   };
   app.get('/watch', view(homePage));
   app.get('/watch/tasks', view(tasksPage));
@@ -150,14 +152,15 @@ export function registerWatch(app, { store, auth }) {
   });
 
   app.post('/watch/signout', async (req, reply) => {
-    auth.signOut(req, reply);
+    await auth.signOut(req, reply);
     return reply.code(303).redirect('/watch');
   });
 
-  function act(req, reply, to, type, payload, okMessage) {
-    const user = auth.sessionUser(req, reply);
+  /** @param {object} req - Request. @param {object} reply - Reply. @param {string} to - Return path. @param {string} type - Action type. @param {object} payload - Action payload. @param {string} okMessage - Success message. @returns {Promise<object>} Redirect. */
+  async function act(req, reply, to, type, payload, okMessage) {
+    const user = await auth.sessionUser(req, reply);
     if (!user) return back(reply, '/watch', 'Please sign in again.', true);
-    const r = store.submit(user, req.deviceId, { id: req.body?.a, type, payload });
+    const r = await store.submit(user, req.deviceId, { id: req.body?.a, type, payload });
     if (r.status === 'accepted') return back(reply, to, okMessage);
     return back(reply, to, r.error?.message ?? 'That didn’t work.', true);
   }

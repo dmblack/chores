@@ -1,0 +1,77 @@
+# Bootstrap the private versioned code bucket before uploading a deployment zip.
+# Keep this stack and referenced object versions while any revision uses them.
+AWSTemplateFormatVersion: '2010-09-09'
+Description: Private, versioned deployment artifacts for the Chores Lambda Web Function.
+
+# This name must match FunctionName in application.yaml so Lambda can read code.
+Parameters:
+  FunctionName:
+    Type: String
+    Default: chores-tasks
+    AllowedPattern: '[A-Za-z0-9][A-Za-z0-9_-]{0,62}[A-Za-z0-9]'
+    MinLength: 2
+    MaxLength: 64
+    Description: Exact Lambda Web Function name used by the application stack.
+
+Resources:
+  # SSE-S3 avoids a customer managed KMS key and its recurring charge.
+  CodeBucket:
+    Type: AWS::S3::Bucket
+    DeletionPolicy: Retain
+    UpdateReplacePolicy: Retain
+    Properties:
+      VersioningConfiguration:
+        Status: Enabled
+      BucketEncryption:
+        ServerSideEncryptionConfiguration:
+          - ServerSideEncryptionByDefault:
+              SSEAlgorithm: AES256
+      OwnershipControls:
+        Rules:
+          - ObjectOwnership: BucketOwnerEnforced
+      PublicAccessBlockConfiguration:
+        BlockPublicAcls: true
+        BlockPublicPolicy: true
+        IgnorePublicAcls: true
+        RestrictPublicBuckets: true
+
+  # Access is limited to this account's revisions of this one Web Function.
+  CodeBucketPolicy:
+    Type: AWS::S3::BucketPolicy
+    DeletionPolicy: Retain
+    UpdateReplacePolicy: Retain
+    Properties:
+      Bucket: !Ref CodeBucket
+      PolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Sid: DenyUnencryptedTransport
+            Effect: Deny
+            Principal: '*'
+            Action: 's3:*'
+            Resource:
+              - !GetAtt CodeBucket.Arn
+              - !Sub '${CodeBucket.Arn}/*'
+            Condition:
+              Bool:
+                aws:SecureTransport: 'false'
+          - Sid: ReadCodeForThisWebFunction
+            Effect: Allow
+            Principal:
+              Service: lambda.amazonaws.com
+            Action:
+              - s3:GetObject
+              - s3:GetObjectVersion
+            Resource: !Sub '${CodeBucket.Arn}/chores/*'
+            Condition:
+              ArnLike:
+                aws:SourceArn: !Sub 'arn:${AWS::Partition}:lambda:${AWS::Region}:${AWS::AccountId}:web-function/${FunctionName}/revision/*'
+
+# The uploader needs its own S3 permissions; the policy above serves Lambda only.
+Outputs:
+  CodeBucket:
+    Value: !Ref CodeBucket
+    Description: Supply this value as CodeBucket in application.yaml.
+  FunctionName:
+    Value: !Ref FunctionName
+    Description: Supply the same FunctionName to application.yaml.

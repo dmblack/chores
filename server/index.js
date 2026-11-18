@@ -1,30 +1,31 @@
-// Starts the chores server on the home network.
-//
-//   PORT=3000 HOST=0.0.0.0 DB_PATH=./data/chores.db node server/index.js
-//
-// HTTPS (needed for the iPads to install it and work offline):
-//   TLS_CERT=/path/cert.pem TLS_KEY=/path/key.pem node server/index.js
+/**
+ * Start the same HTTP application locally or on AWS Lambda Web Functions.
+ * Lambda supplies its listen address and terminates upstream HTTPS itself.
+ * @module server/index
+ */
 
 import { readFileSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { buildApp } from './app.js';
+import { storageConfigFromEnv } from './storage/index.js';
+import { runtimeConfigFromEnv } from './runtime.js';
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const env = process.env;
+const { port, host, ...runtime } = runtimeConfigFromEnv(env);
 const https = env.TLS_CERT && env.TLS_KEY ? { cert: readFileSync(env.TLS_CERT), key: readFileSync(env.TLS_KEY) } : null;
 
 const app = buildApp({
-  dbPath: resolve(env.DB_PATH ?? join(root, 'data', 'chores.db')),
+  storage: storageConfigFromEnv(env, join(root, 'data', 'chores.db')),
   staticDir: join(root, 'client', 'dist'),
-  cookieSecure: env.COOKIE_SECURE ? env.COOKIE_SECURE === 'true' : !!https,
-  trustProxy: env.TRUST_PROXY === 'true',
+  ...runtime,
   https,
-  logger: { level: env.LOG_LEVEL ?? 'info' },
+  logger: { level: env.LOG_LEVEL ?? 'info',
+    redact: ['req.headers.authorization', 'req.headers.cookie', 'req.headers["x-app-origin-secret"]', 'req.headers["x-bootstrap-token"]'] },
 });
 
-const port = Number(env.PORT ?? (https ? 3443 : 3000));
-await app.listen({ port, host: env.HOST ?? '0.0.0.0' });
+await app.listen({ port, host });
 
 for (const sig of ['SIGINT', 'SIGTERM']) {
   process.on(sig, async () => {

@@ -39,10 +39,10 @@ test('resending the same action never applies it twice', async (t) => {
   assert.equal(resub.duplicate, true);
 
   const approve = await h.dusty.act('completion.approve', { completionId: sub.completionId });
-  const events = h.eventCount();
+  const events = await h.eventCount();
   const retry = await h.dusty.act('completion.approve', { completionId: sub.completionId }, { id: approve.actionId });
   assert.equal(retry.duplicate, true);
-  assert.equal(h.eventCount(), events);
+  assert.equal(await h.eventCount(), events);
   assert.equal((await h.harrison.state()).points.balance, 10);
   assert.equal((await h.dusty.state()).points.balance, 1);
 });

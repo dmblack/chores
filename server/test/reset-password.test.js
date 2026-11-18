@@ -9,7 +9,7 @@ import { buildApp } from '../app.js';
 
 const script = fileURLToPath(new URL('../../scripts/reset-password.js', import.meta.url));
 const run = (dbPath, args, input = '') =>
-  spawnSync(process.execPath, [script, ...args], { input, env: { ...process.env, DB_PATH: dbPath }, encoding: 'utf8' });
+  spawnSync(process.execPath, [script, ...args], { input, env: { ...process.env, STORAGE_BACKEND: 'sqlite', DB_PATH: dbPath }, encoding: 'utf8' });
 
 async function login(app, username, password) {
   const res = await app.inject({ method: 'POST', url: '/api/auth/login', payload: { username, password } });
@@ -48,6 +48,6 @@ test('npm run reset-password: resets, signs out on request, and logs the change'
   assert.equal(await login(app, 'dusty', 'forgotten-pass'), 401);
   assert.equal(await login(app, 'dusty', 'brand-new-pass'), 200);
   assert.equal((await app.inject({ method: 'GET', url: '/api/state', cookies: { sid } })).statusCode, 401);
-  const audit = app.store.db.prepare("SELECT payload FROM events WHERE type = 'user.updated'").all().map((r) => JSON.parse(r.payload));
+  const audit = (await app.store.events()).filter((event) => event.type === 'user.updated').map((event) => event.payload);
   assert.deepEqual(audit.at(-1).changes, { passwordReset: true, via: 'console', signedOut: true });
 });

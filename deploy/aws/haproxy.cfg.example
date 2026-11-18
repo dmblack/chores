@@ -1,0 +1,34 @@
+# Merge these snippets into the existing HAProxy configuration; this is not a
+# replacement for its current frontends, certificates, defaults, or other apps.
+# Replace PUBLIC_HOSTNAME, AWS_ENDPOINT_HOSTNAME, ORIGIN_SECRET, and CA_BUNDLE.
+# Keep the rendered config readable only by administrators: it contains a secret.
+
+# Add these two directives INSIDE the existing TLS-terminating HTTP frontend.
+# Keep that frontend's timeout client at least 60s for the 25s SSE heartbeat.
+#   acl chores_host hdr(host),lower -i PUBLIC_HOSTNAME PUBLIC_HOSTNAME:443
+#   use_backend chores_web if chores_host
+
+# Re-resolve the AWS endpoint through the instance's existing DNS configuration.
+resolvers chores_aws_dns
+    parse-resolv-conf
+    hold valid 10s
+    timeout resolve 2s
+    timeout retry 1s
+
+# Forward HTTP over verified TLS without an HTTP health check that wakes Lambda.
+backend chores_web
+    mode http
+    timeout connect 15s
+    timeout server 60s
+
+    # Replace client-supplied forwarding and origin headers with trusted values.
+    http-request del-header Forwarded
+    http-request set-header X-Forwarded-For %[src]
+    http-request set-header X-Forwarded-Proto https
+    http-request set-header X-Forwarded-Host PUBLIC_HOSTNAME
+    http-request set-header X-App-Origin-Secret ORIGIN_SECRET
+    http-request set-header Host AWS_ENDPOINT_HOSTNAME
+
+    # CA_BUNDLE is the OS CA file, such as /etc/ssl/certs/ca-certificates.crt.
+    # All three AWS_ENDPOINT_HOSTNAME occurrences must match the stack output.
+    server lambda AWS_ENDPOINT_HOSTNAME:443 ssl verify required ca-file CA_BUNDLE verifyhost AWS_ENDPOINT_HOSTNAME sni str(AWS_ENDPOINT_HOSTNAME) resolvers chores_aws_dns resolve-prefer ipv4 init-addr last,libc,none

@@ -1,0 +1,231 @@
+# Single-region application infrastructure; deploy this stack in us-west-2.
+# Upload the Linux arm64 package to artifacts.yaml's bucket before creating it.
+AWSTemplateFormatVersion: '2010-09-09'
+Description: Chores PWA and Fastify API on Lambda Web Functions with DynamoDB.
+
+# No secrets are embedded in source, outputs, or default parameter values.
+Parameters:
+  FunctionName:
+    Type: String
+    Default: chores-tasks
+    AllowedPattern: '[A-Za-z0-9][A-Za-z0-9_-]{0,62}[A-Za-z0-9]'
+    MinLength: 2
+    MaxLength: 64
+    Description: Must match the FunctionName used by the artifacts stack.
+  CodeBucket:
+    Type: String
+    MinLength: 3
+    Description: Private versioned S3 bucket created by artifacts.yaml.
+  CodeKey:
+    Type: String
+    AllowedPattern: 'chores/.+'
+    Description: Uploaded zip key under the permitted chores/ prefix.
+  CodeVersion:
+    Type: String
+    MinLength: 1
+    Description: Exact S3 VersionId returned when uploading the zip.
+  PublicHostname:
+    Type: String
+    AllowedPattern: '[a-z0-9]([a-z0-9.-]*[a-z0-9])?'
+    MinLength: 3
+    MaxLength: 253
+    Description: Public HTTPS hostname configured in DNS and HAProxy, without a scheme or path.
+  HouseholdTimezone:
+    Type: String
+    Default: Australia/Melbourne
+    AllowedPattern: '[A-Za-z0-9_+./-]+'
+    MinLength: 1
+    MaxLength: 128
+    Description: IANA timezone for household calendar days, independent of the AWS region.
+  OriginSecret:
+    Type: String
+    NoEcho: true
+    AllowedPattern: '[a-f0-9]{64}'
+    Description: Random 32-byte hex secret shared with HAProxy as X-App-Origin-Secret.
+  BootstrapToken:
+    Type: String
+    NoEcho: true
+    AllowedPattern: '[a-f0-9]{64}'
+    Description: Separate random 32-byte hex secret required to create the first parent account.
+  MaxEnvironments:
+    Type: Number
+    Default: 2
+    MinValue: 2
+    MaxValue: 10
+    Description: Endpoint environment ceiling; AWS does not support a cap below two.
+  RequestRateLimit:
+    Type: Number
+    Default: 100
+    AllowedValues: [0, 100, 200, 300, 400, 500, 600, 700, 800, 900, 1000]
+    Description: Maximum accepted requests per second; zero suspends new requests.
+  RollbackRevisionId:
+    Type: String
+    Default: ''
+    Description: Optional retained revision ID to serve instead of the newly packaged revision.
+
+# A rollback changes endpoint traffic without replacing the table or current code.
+Conditions:
+  UseRollbackRevision: !Not [!Equals [!Ref RollbackRevisionId, '']]
+
+Resources:
+  # The table is regional, on-demand, encrypted, and retained when the stack ends.
+  HouseholdTable:
+    Type: AWS::DynamoDB::Table
+    DeletionPolicy: Retain
+    UpdateReplacePolicy: Retain
+    Properties:
+      BillingMode: PAY_PER_REQUEST
+      TableClass: STANDARD
+      AttributeDefinitions:
+        - AttributeName: pk
+          AttributeType: S
+        - AttributeName: sk
+          AttributeType: S
+      KeySchema:
+        - AttributeName: pk
+          KeyType: HASH
+        - AttributeName: sk
+          KeyType: RANGE
+      TimeToLiveSpecification:
+        AttributeName: ttl
+        Enabled: true
+      PointInTimeRecoverySpecification:
+        PointInTimeRecoveryEnabled: true
+        RecoveryPeriodInDays: 7
+      DeletionProtectionEnabled: true
+      # False selects always-on AWS owned key encryption without KMS charges.
+      SSESpecification:
+        SSEEnabled: false
+
+  # Both log groups exist in a HomeRegion deployment; bound their retention.
+  ApplicationLogs:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: !Sub '/aws/lambda/web/${FunctionName}'
+      RetentionInDays: 14
+  RegionalLogs:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: !Sub '/aws/lambda/web/${FunctionName}.local'
+      RetentionInDays: 14
+
+  # The runtime can access only its own table and log groups; it cannot create tables.
+  ExecutionRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: lambda.amazonaws.com
+            Action: sts:AssumeRole
+      Policies:
+        - PolicyName: HouseholdStorageAndLogs
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Sid: ReadWriteHousehold
+                Effect: Allow
+                Action:
+                  - dynamodb:DescribeTable
+                  - dynamodb:GetItem
+                  - dynamodb:Query
+                  - dynamodb:PutItem
+                  - dynamodb:DeleteItem
+                Resource: !GetAtt HouseholdTable.Arn
+              - Sid: WriteApplicationLogs
+                Effect: Allow
+                Action:
+                  - logs:CreateLogGroup
+                  - logs:CreateLogStream
+                  - logs:PutLogEvents
+                Resource:
+                  - !GetAtt ApplicationLogs.Arn
+                  - !GetAtt RegionalLogs.Arn
+
+  # Web Functions use managed Node.js 24 on Arm64, with no handler or adapter.
+  WebFunction:
+    Type: AWS::Lambda::WebFunction
+    Properties:
+      FunctionName: !Ref FunctionName
+      Tags:
+        - Key: Application
+          Value: Chores
+
+  # Retain previous immutable revisions so traffic can be rolled back explicitly.
+  ApplicationRevision:
+    Type: AWS::Lambda::WebFunctionRevision
+    DeletionPolicy: Retain
+    UpdateReplacePolicy: Retain
+    Properties:
+      FunctionName: !GetAtt WebFunction.FunctionArn
+      Description: Chores PWA and API with portable household storage
+      BuildConfig:
+        CodeConfig:
+          S3Object:
+            Bucket: !Ref CodeBucket
+            Key: !Ref CodeKey
+            VersionId: !Ref CodeVersion
+        RuntimeConfig:
+          Runtime: nodejs24.x
+      ServiceConfig:
+        ExecutionRoleArn: !GetAtt ExecutionRole.Arn
+        TimeoutSeconds: 300
+        MaxConcurrencyPerEnvironment: 64
+        EnvironmentVariables:
+          AWS_LAMBDA_NODEJS_ENTRYPOINT: server/index.js
+          NODE_ENV: production
+          # Keep task days and household dates aligned with the family's calendar.
+          TZ: !Ref HouseholdTimezone
+          STORAGE_BACKEND: dynamodb
+          DYNAMODB_TABLE: !Ref HouseholdTable
+          DYNAMODB_NAMESPACE: household
+          COOKIE_SECURE: 'true'
+          TRUST_PROXY: 'true'
+          APP_ORIGIN_SECRET: !Ref OriginSecret
+          BOOTSTRAP_TOKEN: !Ref BootstrapToken
+          PUBLIC_ORIGIN: !Sub 'https://${PublicHostname}'
+        TelemetryConfig:
+          LoggingConfig:
+            LogGroup: !Ref ApplicationLogs
+            ApplicationLogLevel: INFO
+            SystemLogLevel: WARN
+
+  # HAProxy supplies the application origin secret; user sessions remain app-managed.
+  PublicEndpoint:
+    Type: AWS::Lambda::WebFunctionEndpoint
+    Properties:
+      FunctionName: !GetAtt WebFunction.FunctionArn
+      EndpointName: public
+      EndpointType: HomeRegion
+      AuthType: ApplicationManaged
+      RevisionWeights:
+        - RevisionId: !If [UseRollbackRevision, !Ref RollbackRevisionId, !GetAtt ApplicationRevision.RevisionId]
+          Weight: 100
+      ScalingConfig:
+        MaxEnvironments: !Ref MaxEnvironments
+      ThrottleConfig:
+        RateLimit: !Ref RequestRateLimit
+
+# Use the AWS endpoint hostname for upstream Host, SNI, and certificate validation.
+Outputs:
+  PublicUrl:
+    Value: !Sub 'https://${PublicHostname}'
+  EndpointHostname:
+    Value: !GetAtt PublicEndpoint.DomainName
+  EndpointUrl:
+    Value: !Sub 'https://${PublicEndpoint.DomainName}'
+  CurrentRevisionId:
+    Value: !GetAtt ApplicationRevision.RevisionId
+    Description: Record this value before an update for a possible rollback.
+  ServingRevisionId:
+    Value: !If [UseRollbackRevision, !Ref RollbackRevisionId, !GetAtt ApplicationRevision.RevisionId]
+  DynamoDBTable:
+    Value: !Ref HouseholdTable
+  ExecutionRoleArn:
+    Value: !GetAtt ExecutionRole.Arn
+  ApplicationLogGroup:
+    Value: !Ref ApplicationLogs
+  RegionalLogGroup:
+    Value: !Ref RegionalLogs

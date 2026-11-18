@@ -65,14 +65,40 @@ CREATE TABLE IF NOT EXISTS login_throttle (
   last_miss    INTEGER NOT NULL,
   locked_until INTEGER NOT NULL
 );
+
+-- Storage-independent concurrency metadata and durable domain projections.
+CREATE TABLE IF NOT EXISTS storage_meta (
+  id INTEGER PRIMARY KEY CHECK (id = 1),
+  revision INTEGER NOT NULL,
+  seq INTEGER NOT NULL
+);
+CREATE TABLE IF NOT EXISTS storage_projection (
+  key TEXT PRIMARY KEY,
+  value TEXT NOT NULL
+);
 `;
 
+/**
+ * Open or additively upgrade a SQLite file without replacing existing data.
+ * @param {string} file - Database path or :memory:.
+ * @returns {Database.Database} Open SQLite connection.
+ */
 export function openDb(file) {
   if (file !== ':memory:') mkdirSync(dirname(file), { recursive: true });
   const db = new Database(file);
   db.pragma('journal_mode = WAL');
   db.pragma('foreign_keys = ON');
   db.pragma('synchronous = NORMAL');
-  db.exec(SCHEMA);
+  // Serialize schema checks with upgrades when several server processes start together.
+  const upgrade = db.transaction(() => {
+    db.exec(SCHEMA);
+    if (!db.prepare('PRAGMA table_info(users)').all().some((column) => column.name === 'auth_version')) {
+      db.exec('ALTER TABLE users ADD COLUMN auth_version INTEGER NOT NULL DEFAULT 0');
+    }
+    if (!db.prepare('PRAGMA table_info(sessions)').all().some((column) => column.name === 'user_version')) {
+      db.exec('ALTER TABLE sessions ADD COLUMN user_version INTEGER NOT NULL DEFAULT 0');
+    }
+  });
+  upgrade.immediate();
   return db;
 }

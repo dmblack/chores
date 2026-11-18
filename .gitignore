@@ -1,7 +1,8 @@
 node_modules/
 client/dist/
-data/
+/data/
 *.db
 *.db-wal
 *.db-shm
 .env
+.deploy/

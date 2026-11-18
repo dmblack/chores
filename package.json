@@ -15,11 +15,17 @@
     "build": "vite build --config client/vite.config.js",
     "build:watch": "vite build --watch --logLevel warn --config client/vite.config.js",
     "start": "node server/index.js",
-    "test": "node --test \"server/test/**/*.test.js\"",
+    "test": "node --test \"server/test/**/*.test.js\" \"client/src/**/*.test.js\"",
+    "test:dynamodb": "node scripts/test-dynamodb.js",
+    "storage:setup": "node scripts/setup-storage.js",
+    "package:aws": "node scripts/package-aws.js",
+    "test:aws-package": "node scripts/test-aws-package.js",
     "icons": "node scripts/make-icons.js",
     "reset-password": "node scripts/reset-password.js"
   },
   "dependencies": {
+    "@aws-sdk/client-dynamodb": "^3.1171.0",
+    "@aws-sdk/lib-dynamodb": "^3.1171.0",
     "@fastify/cookie": "^11.1.5",
     "@fastify/static": "^10.1.11",
     "better-sqlite3": "^13.2.0",

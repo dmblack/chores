@@ -5,15 +5,30 @@ import { buildApp } from '../app.js';
 export const MONDAY = new Date(2026, 10, 16, 9, 0);
 export const at = (day, hour, minute = 0) => new Date(2026, 10, day, hour, minute);
 
-export async function household({ now = MONDAY } = {}) {
+/**
+ * Isolate a household on the selected test adapter without using production data.
+ * @returns {object} SQLite memory options or a unique DynamoDB test namespace.
+ */
+export function testStorage() {
+  if (process.env.TEST_STORAGE_BACKEND === 'dynamodb') {
+    if (!process.env.DYNAMODB_ENDPOINT || !process.env.DYNAMODB_TABLE) throw new Error('DynamoDB tests require an explicit local endpoint and table.');
+    return { backend: 'dynamodb', table: process.env.DYNAMODB_TABLE, endpoint: process.env.DYNAMODB_ENDPOINT,
+      region: process.env.AWS_REGION ?? 'us-east-1', namespace: `test-${randomUUID()}` };
+  }
+  return { backend: 'sqlite', dbPath: ':memory:' };
+}
+
+/** @param {object} [options] - Test clock and optional shared storage. @returns {Promise<object>} Household fixture. */
+export async function household({ now = MONDAY, storage = testStorage() } = {}) {
   let current = new Date(now);
-  const app = buildApp({ clock: () => new Date(current) });
+  const app = buildApp({ storage, clock: () => new Date(current) });
   await app.ready();
 
-  function client() {
+  /** @param {object} [targetApp] - Optional independent server. @returns {object} Cookie-aware test client. */
+  function client(targetApp = app) {
     const jar = {};
     async function call(method, url, payload) {
-      const res = await app.inject({ method, url, payload, cookies: { ...jar } });
+      const res = await targetApp.inject({ method, url, payload, cookies: { ...jar } });
       for (const c of res.cookies) {
         if (c.value === '' || c.maxAge === 0) delete jar[c.name];
         else jar[c.name] = c.value;
@@ -70,10 +85,14 @@ export async function household({ now = MONDAY } = {}) {
     return taskId;
   }
 
-  const eventCount = () => app.store.db.prepare('SELECT COUNT(*) AS n FROM events').get().n;
+  /** @returns {Promise<number>} Adapter-independent audit count. */
+  const eventCount = async () => (await app.store.events()).length;
 
   return {
     app,
+    storage,
+    /** @returns {Date} Current fixture time for a second server process. */
+    clock: () => new Date(current),
     client,
     dusty,
     dana,
